@@ -4,7 +4,7 @@
 // See https://users.rust-lang.org/t/psa-dealing-with-warning-unused-import-std-ascii-asciiext-in-today-s-nightly/13726
 #[allow(deprecated, unused_imports)]
 use std::ascii::AsciiExt;
-
+use std::borrow::Cow;
 use std::str::FromStr;
 
 use self::ConvertCase::*;
@@ -12,8 +12,6 @@ use self::ConvertCase::*;
 /// The different possible ways to change case of fields in a struct, or variants in an enum.
 #[derive(Copy, Clone, PartialEq)]
 pub enum ConvertCase {
-    /// Don't apply a default rename rule.
-    None,
     /// Rename direct children to "lowercase" style.
     LowerCase,
     /// Rename direct children to "UPPERCASE" style.
@@ -35,15 +33,19 @@ pub enum ConvertCase {
     ScreamingKebabCase,
 }
 
+/// Add a prefix to fields in a struct, or variants in an enum.
+#[derive(Clone, PartialEq)]
+pub struct AddPrefix(String);
+
 /// The container-level rename rules to apply to a field
 #[derive(Clone, PartialEq, Default)]
 pub struct RenameRule {
-    prefix: Option<String>,
-    convert_case: ConvertCase,
+    prefix: Option<AddPrefix>,
+    convert_case: Option<ConvertCase>,
 }
 
 impl RenameRule {
-    pub fn new(prefix: Option<String>, convert_case: ConvertCase) -> Self {
+    pub fn new(prefix: Option<AddPrefix>, convert_case: Option<ConvertCase>) -> Self {
         RenameRule {
             prefix,
             convert_case,
@@ -51,29 +53,27 @@ impl RenameRule {
     }
 
     /// Apply a renaming rule to an enum variant, returning the version expected in the source.
-    pub fn apply_to_variant(&self, variant: &str) -> String {
-        let variant = self.convert_case.apply_to_variant(variant);
-        if let Some(prefix) = &self.prefix {
-            let mut result = String::with_capacity(prefix.len() + variant.len());
-            result.push_str(prefix);
-            result.push_str(&variant);
-            result
-        } else {
-            variant
+    pub fn apply_to_variant(&self, name: &str) -> String {
+        let mut name = Cow::from(name);
+        if let Some(convert_case) = self.convert_case {
+            name = Cow::from(convert_case.apply_to_variant(&name))
         }
+        if let Some(prefix) = &self.prefix {
+            name = Cow::from(prefix.apply(&name))
+        }
+        name.into_owned()
     }
 
     /// Apply a renaming rule to a struct field, returning the version expected in the source.
-    pub fn apply_to_field(&self, field: &str) -> String {
-        let field = self.convert_case.apply_to_field(field);
-        if let Some(prefix) = &self.prefix {
-            let mut result = String::with_capacity(prefix.len() + field.len());
-            result.push_str(prefix);
-            result.push_str(&field);
-            result
-        } else {
-            field
+    pub fn apply_to_field(&self, name: &str) -> String {
+        let mut name = Cow::from(name);
+        if let Some(convert_case) = self.convert_case {
+            name = Cow::from(convert_case.apply_to_field(&name))
         }
+        if let Some(prefix) = &self.prefix {
+            name = Cow::from(prefix.apply(&name))
+        }
+        name.into_owned()
     }
 }
 
@@ -81,7 +81,7 @@ impl ConvertCase {
     /// Apply a renaming rule to an enum variant, returning the version expected in the source.
     pub fn apply_to_variant(&self, variant: &str) -> String {
         match *self {
-            None | PascalCase => variant.to_owned(),
+            PascalCase => variant.to_owned(),
             LowerCase => variant.to_ascii_lowercase(),
             UPPERCASE => variant.to_ascii_uppercase(),
             CamelCase => variant[..1].to_ascii_lowercase() + &variant[1..],
@@ -106,7 +106,7 @@ impl ConvertCase {
     /// Apply a renaming rule to a struct field, returning the version expected in the source.
     pub fn apply_to_field(&self, field: &str) -> String {
         match *self {
-            None | LowerCase | SnakeCase => field.to_owned(),
+            LowerCase | SnakeCase => field.to_owned(),
             UPPERCASE => field.to_ascii_uppercase(),
             PascalCase => {
                 let mut pascal = String::new();
@@ -134,9 +134,16 @@ impl ConvertCase {
     }
 }
 
-impl Default for ConvertCase {
-    fn default() -> ConvertCase {
-        None
+impl AddPrefix {
+    pub fn from_string(prefix: String) -> AddPrefix {
+        AddPrefix(prefix)
+    }
+
+    pub fn apply(&self, name: &str) -> String {
+        let mut result = String::with_capacity(self.0.len() + name.len());
+        result.push_str(&self.0);
+        result.push_str(&name);
+        result
     }
 }
 
@@ -177,7 +184,6 @@ fn rename_variants() {
         ("A", "a", "A", "a", "a", "A", "a", "A"),
         ("Z42", "z42", "Z42", "z42", "z42", "Z42", "z42", "Z42"),
     ] {
-        assert_eq!(None.apply_to_variant(original), original);
         assert_eq!(LowerCase.apply_to_variant(original), lower);
         assert_eq!(UPPERCASE.apply_to_variant(original), upper);
         assert_eq!(PascalCase.apply_to_variant(original), original);
@@ -210,7 +216,6 @@ fn rename_fields() {
         ("a", "A", "A", "a", "A", "a", "A"),
         ("z42", "Z42", "Z42", "z42", "Z42", "z42", "Z42"),
     ] {
-        assert_eq!(None.apply_to_field(original), original);
         assert_eq!(UPPERCASE.apply_to_field(original), upper);
         assert_eq!(PascalCase.apply_to_field(original), pascal);
         assert_eq!(CamelCase.apply_to_field(original), camel);
